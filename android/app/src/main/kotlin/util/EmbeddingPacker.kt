@@ -1,5 +1,6 @@
+package com.example.edgecam.util
+
 import android.util.Base64
-import android.util.Half
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.sqrt
@@ -7,7 +8,7 @@ import kotlin.math.sqrt
 object EmbeddingPacker {
 
     /**
-     * 요구사항: API 26+ (Galaxy S24는 OK) 
+     * 요구사항: API 26+ (Galaxy S24는 OK)
      * android.util.Half를 사용해 float→half 변환(IEEE 754 half) 진행
      * FloatArray(float32) -> float16 raw bytes (little-endian) -> base64 (NO_WRAP)
      *
@@ -25,21 +26,62 @@ object EmbeddingPacker {
         for (i in emb.indices) emb[i] = emb[i] / norm
         return emb
     }
-    fun packFloat16Base64(emb: FloatArray): String {
-        /**
-         * FloatArray(float32) -> float16 raw bytes (little-endian) -> base64(NO_WRAP)
-         * return: base64 string
-         */
-         // float16(half) = 2 bytes per element
+
+    fun packFloat16Base64(emb: FloatArray, normalize: Boolean = true): String {
         if (normalize) l2NormalizeInPlace(emb)
-        val buf = ByteBuffer.allocate(emb.size * 2).order(ByteOrder.LITTLE_ENDIAN) //LITTLE_ENDIAN -> 파이썬 np.float16과 가장 안전하게 맞추기 위함
+
+        val buf = ByteBuffer.allocate(emb.size * 2).order(ByteOrder.LITTLE_ENDIAN)
         for (f in emb) {
-            val halfBits: Short = Half.toHalf(f) // IEEE 754 half bits
-            buf.putShort(halfBits)
+            buf.putShort(floatToHalfBits(f))
         }
-        val bytes = buf.array()
-        return Base64.encodeToString(bytes, Base64.NO_WRAP) // NO_WRAP: 줄바꿈 문자 없는 스트링(서버 파싱 안정적)
+        return Base64.encodeToString(buf.array(), Base64.NO_WRAP)
     }
+
+    /**
+     * float32 -> IEEE754 float16 bits (round-to-nearest-even 근사)
+     * - NaN/Inf 처리 포함
+     * - subnormal 간단 처리 포함
+     */
+    private fun floatToHalfBits(f: Float): Short {
+        val bits = java.lang.Float.floatToIntBits(f)
+        val sign = (bits ushr 16) and 0x8000
+        var exp = ((bits ushr 23) and 0xFF)
+        var mant = bits and 0x7FFFFF
+
+        // NaN / Inf
+        if (exp == 0xFF) {
+            return (sign or 0x7C00 or (if (mant != 0) 0x01 else 0x00)).toShort()
+        }
+
+        // exponent adjust: float32 bias 127 -> float16 bias 15
+        exp = exp - 127 + 15
+
+        // underflow -> subnormal/zero
+        if (exp <= 0) {
+            if (exp < -10) {
+                return sign.toShort() // too small -> 0
+            }
+            // subnormal: implicit leading 1 for mantissa in float32
+            mant = mant or 0x800000
+            val shift = 1 - exp
+            // round
+            val halfMant = (mant ushr (13 + shift))
+            return (sign or halfMant).toShort()
+        }
+
+        // overflow -> Inf
+        if (exp >= 0x1F) {
+            return (sign or 0x7C00).toShort()
+        }
+
+        // normal
+        // round mantissa: take top 10 bits with rounding
+        val mantRounded = mant + 0x1000 // rounding bias for 13-bit shift
+        val halfMant = (mantRounded ushr 13) and 0x03FF
+
+        return (sign or (exp shl 10) or halfMant).toShort()
+    }
+
     /** float16 payload bytes size for given dim */
     fun float16Bytes(dim: Int): Int = dim * 2
 
@@ -48,20 +90,6 @@ object EmbeddingPacker {
      * For accurate measure: use b64.length in chars (ASCII) == bytes count in UTF-8.
      */
     fun estimateBase64Len(bytesLen: Int): Int = ((bytesLen + 2) / 3) * 4
-        
-    /**
-     * (디버그용) base64 float16 -> FloatArray(float32) 복원
-     */
-    fun unpackFloat16Base64(b64: String, dim: Int): FloatArray {
-        val raw = Base64.decode(b64, Base64.DEFAULT)
-        require(raw.size == dim * 2) { "Invalid byte length: ${raw.size}, expected ${dim * 2}" }
 
-        val buf = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
-        val out = FloatArray(dim)
-        for (i in 0 until dim) {
-            val halfBits = buf.getShort()
-            out[i] = Half.toFloat(halfBits)
-        }
-        return out
-    }
+
 }

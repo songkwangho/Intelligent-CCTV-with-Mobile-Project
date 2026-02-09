@@ -1,3 +1,6 @@
+package com.example.edgecam.ingest
+
+import com.example.edgecam.util.EmbeddingPacker
 import org.json.JSONArray
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
@@ -23,20 +26,19 @@ object IngestMessageBuilder {
         val b64 = EmbeddingPacker.packFloat16Base64(embedding, normalize = true)
 
         return JSONObject().apply {
-            put("bev_x", bevX)// 지금 PoC 기준: bev_x/ bev_y 또는 x/y 
+            put("bev_x", bevX)
             put("bev_y", bevY)
-            put("emb_b64", b64)// ✅ float16 base64
-            put("emb_dtype", "float16") // ✅ 서버 파서가 이걸 보고 np.float16 처리
-        // put("conf", 0.92)            // 옵션
-        // put("bbox", ...)             // 옵션(2단계에서)
-        // put("foot", ...)             // 옵션(2단계에서)
+            put("emb_b64", b64)
+            put("emb_dtype", "float16")
         }
     }
 
     fun buildIngestMsg(
         v: Int = 1,
-        tsSec: Double,
+        tsSec: Double,     // edge send time (sec)
         frameId: Long,
+        seq: Long,         // per-camera increasing sequence
+        captureTsUs: Long, // capture timestamp in microseconds (key for video sync)
         detections: List<JSONObject>
     ): BuiltMessage {
         val arr = JSONArray()
@@ -46,11 +48,18 @@ object IngestMessageBuilder {
             put("v", v)
             put("ts", tsSec)
             put("frame_id", frameId)
+            put("seq", seq)
+            put("capture_ts_us", captureTsUs)
             put("detections", arr)
         }
 
         val jsonStr = msg.toString()
         val bytes = jsonStr.toByteArray(StandardCharsets.UTF_8)
-        return BuiltMessage(json = jsonStr, byteSize = bytes.size, detectionsCount = detections.size)
+
+        return BuiltMessage(
+            json = jsonStr,
+            byteSize = bytes.size,
+            detectionsCount = detections.size
+        )
     }
 }

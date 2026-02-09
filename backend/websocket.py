@@ -249,8 +249,13 @@ async def ingest_ws(ws: WebSocket, cam_id: int):
     # (선택) 토큰 인증을 이미 쓰고 있다면 유지
     expected = get_cam_token(cam_id)
     provided = ws.headers.get("x-edge-token")
-    if expected is not None and provided != expected:#토큰 기반 메시지 접근 제어
-        await ws.close(code=1008, reason="unauthorized") 
+    if expected is None:
+        # 등록되지 않은 카메라 ID
+        await ws.close(code=1008, reason="cam not registered")  # policy violation
+        return
+
+    if provided != expected:
+        await ws.close(code=1008, reason="unauthorized")
         return
 
     tracker = _ensure_tracker(cam_id)

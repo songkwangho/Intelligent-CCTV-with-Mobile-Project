@@ -75,5 +75,10 @@
       setStatus("receiving: detected_data");
       return;
     }
+
+    if (msg.type === "camera_status") {// msg.status: { "0": {online, rx_fps, ...}, "1": {...} }
+      console.log("camera_status", msg.status);
+    }
+
   };
 })();
