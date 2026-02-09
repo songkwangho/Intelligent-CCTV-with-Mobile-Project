@@ -8,7 +8,13 @@
   };
 
   const cfg = window.APP_CONFIG || {};
-  const wsUrl = cfg.wsUrl || "ws://127.0.0.1:8001/ws";
+  const DEFAULT_HOST = "10.100.0.21"; // fallback
+  const host = (location.hostname && location.hostname !== "127.0.0.1" && location.hostname !== "localhost")
+    ? location.hostname
+    : DEFAULT_HOST;
+
+  const wsUrl = `ws://${host}:8001/ws`;
+  console.log("connecting ->", wsUrl);
   setStatus(`connecting -> ${wsUrl}`);
 
   const bg = document.getElementById("bg");
