@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  control:
+    build: ./control
+    container_name: control
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    networks:
+      - appnet
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: mediamtx
+    ports:
+      - "8554:8554"      # RTSP
+      - "9000:9000/udp"
+      - "9001:9001/udp"  
+      - "8889:8889"      # WebRTC web / HTTP
+      - "8189:8189/udp" # WebRTC
+      - "8888:8888/udp"  # WebRTC ICE (환경에 따라 필요)
+    volumes:
+      - /home/team_gh/toy_dev/deploy/mediamtx.yml:/mediamtx.yml  
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge

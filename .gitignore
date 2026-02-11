@@ -1,0 +1,22 @@
+# Dependencies
+miniforge3/
+Miniforge3-Linux-x86_64.sh
+
+# Build outputs
+install/
+install_test/
+install2/
+snap/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
