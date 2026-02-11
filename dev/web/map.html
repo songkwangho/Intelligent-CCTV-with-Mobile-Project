@@ -2,30 +2,216 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>BEV Map Tracking test</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>BEV Map + Logs</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 12px; }
+    .row { display: flex; gap: 12px; align-items: flex-start; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 10px; }
+    .mapWrap { position: relative; width: 700px; height: 700px; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 8px; }
+    .controls { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    input, select { padding: 6px 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px 8px; font-size: 12px; }
+    th { text-align: left; position: sticky; top: 0; background: #fff; z-index: 1; }
+    .logWrap { height: 420px; overflow: auto; }
+    .pill { display:inline-block; padding:2px 6px; border-radius:999px; background:#f2f2f2; font-size:12px; }
+  </style>
 </head>
 <body>
-  <div style="position: relative; width: 500px; height: 500px; border: 1px solid black;">
-    <canvas id="bg"    width="500" height="500" style="position:absolute; left:0; top:0; z-index:0;"></canvas>
-    <canvas id="trail" width="500" height="500" style="position:absolute; left:0; top:0; z-index:1;"></canvas>
-    <canvas id="dot"   width="500" height="500" style="position:absolute; left:0; top:0; z-index:2;"></canvas>
+  <h2 style="margin:0 0 8px 0;">Map Panel</h2>
+
+  <div class="row">
+    <!-- MAP -->
+    <div class="panel">
+      <div class="mapWrap" style="border:1px solid #000;">
+        <canvas id="bg"    width="700" height="700" style="position:absolute; left:0; top:0; z-index:0;"></canvas>
+        <canvas id="trail" width="700" height="700" style="position:absolute; left:0; top:0; z-index:1;"></canvas>
+        <canvas id="dot"   width="700" height="700" style="position:absolute; left:0; top:0; z-index:2;"></canvas>
+      </div>
+
+      <div id="status" class="status">status: loading...</div>
+
+      <div class="controls">
+        <span class="pill">filters</span>
+        <label>cam</label>
+        <select id="camFilter">
+          <option value="">ALL</option>
+        </select>
+
+        <label>gid</label>
+        <input id="gidFilter" placeholder="e.g. 12" style="width:120px;" />
+
+        <label>track</label>
+        <input id="trackFilter" placeholder="e.g. 3" style="width:120px;" />
+
+        <button id="clearBtn">Clear logs</button>
+      </div>
+    </div>
+
+    <!-- LOGS -->
+    <div class="panel" style="min-width:520px; flex:1;">
+      <h3 style="margin:0 0 8px 0;">Detections / Tracking Logs</h3>
+      <div class="logWrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:140px;">time</th>
+              <th style="width:70px;">cam</th>
+              <th style="width:90px;">gid</th>
+              <th style="width:90px;">track</th>
+              <th style="width:140px;">bev(x,y)</th>
+              <th>raw</th>
+            </tr>
+          </thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+      <div class="status" id="logStatus">log: idle</div>
+    </div>
   </div>
-  <!-- ✅ 연결 상태 표시 -->
-  <div id="status" style="margin-top:8px; font-family: monospace;">
-    status: loading...
-  </div>
-  <!-- 바꾸기 쉬운 설정값 -->
+
+  <!-- app config (기존 main.js/canvas.js가 사용) -->
   <script>
     window.APP_CONFIG = {
-      historyLen: 50,
-      ttlFrames: 15,
-      jumpThPx: 80,
-      gapFrames: 2,
+      historyLen: 80,
+      ttlFrames: 30,
+      jumpThPx: 120,
+      gapFrames: 3,
       breakOnCamChange: true
     };
   </script>
 
+  <!-- 기존 지도 렌더러 -->
   <script src="./canvas.js"></script>
   <script src="./main.js"></script>
+
+  <!-- 로그 수집/표시 (별도 WS 연결: main.js 수정 없이 동작) -->
+  <script>
+    (function () {
+      const DEFAULT_HOST = "10.100.0.21";
+      const host =
+        (location.hostname && location.hostname !== "127.0.0.1" && location.hostname !== "localhost")
+          ? location.hostname
+          : DEFAULT_HOST;
+
+      const wsUrl = `ws://${host}:8001/ws`;
+
+      const logBody = document.getElementById("logBody");
+      const logStatus = document.getElementById("logStatus");
+      const camFilter = document.getElementById("camFilter");
+      const gidFilter = document.getElementById("gidFilter");
+      const trackFilter = document.getElementById("trackFilter");
+      const clearBtn = document.getElementById("clearBtn");
+
+      const MAX_LOGS = 500;
+      const logs = []; // newest last
+      const camSet = new Set();
+
+      function fmtTime(ts) {
+        // ts가 마이크로초/밀리초/초일 수 있어서 대충 처리
+        if (typeof ts !== "number") return "";
+        let ms = ts;
+        if (ts > 1e15) ms = Math.floor(ts / 1000); // us -> ms
+        else if (ts < 1e12) ms = Math.floor(ts * 1000); // s -> ms
+        const d = new Date(ms);
+        return d.toLocaleTimeString() + "." + String(d.getMilliseconds()).padStart(3, "0");
+      }
+
+      function upsertCamOptions() {
+        const cur = camFilter.value;
+        camFilter.innerHTML = `<option value="">ALL</option>` + [...camSet].sort().map(c => `<option value="${c}">${c}</option>`).join("");
+        camFilter.value = cur;
+      }
+
+      function passFilter(row) {
+        const camV = camFilter.value.trim();
+        const gidV = gidFilter.value.trim();
+        const trkV = trackFilter.value.trim();
+
+        if (camV && row.cam_id !== camV) return false;
+        if (gidV && String(row.gid ?? "") !== gidV) return false;
+        if (trkV && String(row.track_id ?? "") !== trkV) return false;
+        return true;
+      }
+
+      function render() {
+        const filtered = logs.filter(passFilter);
+        const tail = filtered.slice(-200); // 화면에는 최근 200개만
+        logBody.innerHTML = tail.map(r => {
+          const raw = r.raw ? JSON.stringify(r.raw) : "";
+          const gid = (r.gid === null || r.gid === undefined) ? "" : r.gid;
+          const bev = (Number.isFinite(r.bev_x) && Number.isFinite(r.bev_y)) ? `${r.bev_x.toFixed(1)}, ${r.bev_y.toFixed(1)}` : "";
+          return `
+            <tr>
+              <td>${fmtTime(r.ts)}</td>
+              <td>${r.cam_id}</td>
+              <td>${gid}</td>
+              <td>${r.track_id ?? ""}</td>
+              <td>${bev}</td>
+              <td style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;">
+                ${raw}
+              </td>
+            </tr>
+          `;
+        }).join("");
+        logStatus.textContent = `log: connected (${logs.length} buffered, showing ${tail.length})`;
+      }
+
+      clearBtn.onclick = () => {
+        logs.length = 0;
+        render();
+      };
+
+      camFilter.onchange = render;
+      gidFilter.oninput = render;
+      trackFilter.oninput = render;
+
+      logStatus.textContent = `log: connecting -> ${wsUrl}`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        logStatus.textContent = `log: connected -> ${wsUrl}`;
+      };
+      ws.onerror = () => {
+        logStatus.textContent = "log: error websocket";
+      };
+      ws.onclose = (e) => {
+        logStatus.textContent = `log: closed ${e.code} ${e.reason || ""}`;
+      };
+
+      ws.onmessage = (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch { return; }
+
+        // 서버가 보내는 포맷: {type:"detected_data", data:{camId:{trackId:{bev_x,bev_y,global_id,...}}}}
+        if (msg.type !== "detected_data") return;
+
+        const now = Date.now();
+        const data = msg.data || {};
+        for (const camId in data) {
+          camSet.add(String(camId));
+          const tracks = data[camId] || {};
+          for (const trackId in tracks) {
+            const p = tracks[trackId] || {};
+            const row = {
+              ts: p.ts ?? p.capture_ts_us ?? p.capture_ts_ms ?? now,
+              cam_id: String(camId),
+              gid: (p.global_id ?? p.gid ?? null),
+              track_id: trackId,
+              bev_x: Number(p.bev_x ?? p.x),
+              bev_y: Number(p.bev_y ?? p.y),
+              raw: p
+            };
+            logs.push(row);
+            if (logs.length > MAX_LOGS) logs.shift();
+          }
+        }
+        upsertCamOptions();
+        render();
+      };
+    })();
+  </script>
 </body>
 </html>
