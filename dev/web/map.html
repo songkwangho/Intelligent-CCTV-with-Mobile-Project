@@ -17,6 +17,8 @@
     th { text-align: left; position: sticky; top: 0; background: #fff; z-index: 1; }
     .logWrap { height: 420px; overflow: auto; }
     .pill { display:inline-block; padding:2px 6px; border-radius:999px; background:#f2f2f2; font-size:12px; }
+    .gidLink { color: #0b57d0; text-decoration: underline; cursor: pointer; } /* gid */
+    .gidLinkActive { background: #ffe8a3; border-radius: 4px; padding: 0 4px; }/* gid */
   </style>
 </head>
 <body>
@@ -32,6 +34,8 @@
       </div>
 
       <div id="status" class="status">status: loading...</div>
+       <!-- 현재 focus_gid 상태 표시 -->
+      <div id="focus" class="status">focus_gid: (none)</div>
 
       <div class="controls">
         <span class="pill">filters</span>
@@ -47,6 +51,8 @@
         <input id="trackFilter" placeholder="e.g. 3" style="width:120px;" />
 
         <button id="clearBtn">Clear logs</button>
+                <!--  focus 해제 버튼 -->
+        <button id="clearFocusBtn">Clear focus</button>
       </div>
     </div>
 
@@ -72,7 +78,7 @@
     </div>
   </div>
 
-  <!-- app config (기존 main.js/canvas.js가 사용) -->
+  <!-- app config (main.js/canvas.js가 사용) -->
   <script>
     window.APP_CONFIG = {
       historyLen: 80,
@@ -83,11 +89,11 @@
     };
   </script>
 
-  <!-- 기존 지도 렌더러 -->
+  <!-- 지도 렌더링 용 js -->
   <script src="./canvas.js"></script>
   <script src="./main.js"></script>
 
-  <!-- 로그 수집/표시 (별도 WS 연결: main.js 수정 없이 동작) -->
+  <!-- 로그 수집/표시 + /ui -->
   <script>
     (function () {
       const DEFAULT_HOST = "10.100.0.21";
@@ -109,8 +115,53 @@
       const logs = []; // newest last
       const camSet = new Set();
 
+      // =========================
+      // /ui WebSocket (focus_gid 동기화)
+      const focusEl = document.getElementById("focus");                 
+      const clearFocusBtn = document.getElementById("clearFocusBtn");   
+      const uiWsUrl = `ws://${host}:8001/ui`;                           
+      let focusedGid = null;                                            
+
+      function renderFocus() {                                          
+        focusEl.textContent = `focus_gid: ${focusedGid ?? "(none)"}`;
+      }
+
+      focusEl.textContent = `focus_gid: (connecting) -> ${uiWsUrl}`;    
+      const ui = new WebSocket(uiWsUrl);                                
+
+      ui.onopen = () => {                                               
+        renderFocus();
+      };
+      ui.onerror = () => {                                              
+        focusEl.textContent = "focus_gid: (ui ws error)";
+      };
+      ui.onclose = (e) => {                                            
+        focusEl.textContent = `focus_gid: (ui ws closed) ${e.code} ${e.reason || ""}`;
+      };
+      ui.onmessage = (ev) => {                                         
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === "focus_gid") {
+          const gid = msg.data?.gid;
+          focusedGid = (gid === null || gid === undefined || gid === "") ? null : Number(gid);
+          render();
+        }
+      };
+
+      function sendFocus(gid) {                                        
+        const payload = { type: "focus_gid", data: { gid, src: "map", ts: Date.now() } };
+        if (ui.readyState === WebSocket.OPEN) ui.send(JSON.stringify(payload));
+      }
+
+      clearFocusBtn.onclick = () => {                                   
+        focusedGid = null;
+        renderFocus();
+        sendFocus(null);
+      };
+      // ========================= //
+
       function fmtTime(ts) {
-        // ts가 마이크로초/밀리초/초일 수 있어서 대충 처리
+        // ts가 마이크로초/밀리초/초일 수 있어서 일단 대충 처리
         if (typeof ts !== "number") return "";
         let ms = ts;
         if (ts > 1e15) ms = Math.floor(ts / 1000); // us -> ms
@@ -137,17 +188,31 @@
       }
 
       function render() {
+        renderFocus(); // focus 표시 갱신
+
         const filtered = logs.filter(passFilter);
-        const tail = filtered.slice(-200); // 화면에는 최근 200개만
+        const tail = filtered.slice(-200); // 화면의 trajectory는 최근 200개만
+
         logBody.innerHTML = tail.map(r => {
           const raw = r.raw ? JSON.stringify(r.raw) : "";
           const gid = (r.gid === null || r.gid === undefined) ? "" : r.gid;
           const bev = (Number.isFinite(r.bev_x) && Number.isFinite(r.bev_y)) ? `${r.bev_x.toFixed(1)}, ${r.bev_y.toFixed(1)}` : "";
+          // focus gid면 스타일 강조
+          const gidVal = (r.gid === null || r.gid === undefined) ? "" : r.gid;
+          const gidClass = (focusedGid !== null && Number(gidVal) === Number(focusedGid))
+            ? "gidLink gidLinkActive"
+            : "gidLink";
+
+          // gid를 클릭 가능한 링크로 렌더링(data-gid 포함)
+          const gidCell = gidVal === ""
+            ? ""
+            : `<a href="#" class="${gidClass}" data-gid="${gidVal}">${gidVal}</a>`;
+
           return `
             <tr>
               <td>${fmtTime(r.ts)}</td>
               <td>${r.cam_id}</td>
-              <td>${gid}</td>
+              <td>${gidCell}</td>
               <td>${r.track_id ?? ""}</td>
               <td>${bev}</td>
               <td style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;">
@@ -156,8 +221,26 @@
             </tr>
           `;
         }).join("");
+
         logStatus.textContent = `log: connected (${logs.length} buffered, showing ${tail.length})`;
       }
+
+      // gid 클릭 이벤트(이벤트 위임) → /ui로 focus_gid 전송
+      logBody.addEventListener("click", (e) => {       
+        //e.target이 text 노드일 수 있으므로 element로 보정                 
+        const t = (e.target && e.target.nodeType === 1) ? e.target : e.target.parentElement; 
+        const a = t ? t.closest("a[data-gid]") : null;
+        if (!a) return;
+
+        e.preventDefault();
+        const gid = a.getAttribute("data-gid");
+        if (!gid) return;
+
+        focusedGid = Number(gid);
+        renderFocus();
+        sendFocus(focusedGid);
+        render(); // 테이블 강조 즉시 반영
+      });
 
       clearBtn.onclick = () => {
         logs.length = 0;
@@ -168,7 +251,7 @@
       gidFilter.oninput = render;
       trackFilter.oninput = render;
 
-      logStatus.textContent = `log: connecting -> ${wsUrl}`;
+      //logStatus.textContent = `log: connecting -> ${wsUrl}`;
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -180,8 +263,34 @@
       ws.onclose = (e) => {
         logStatus.textContent = `log: closed ${e.code} ${e.reason || ""}`;
       };
+      
+      logStatus.textContent = "log: waiting detected_data event...";
 
-      ws.onmessage = (event) => {
+      window.addEventListener("edge:detected_data", (ev) => {
+        const now = Date.now();
+        const data = ev.detail || {};
+
+        for (const camId in data) {
+          camSet.add(String(camId));
+          const tracks = data[camId] || {};
+          for (const trackId in tracks) {
+            const p = tracks[trackId] || {};
+            logs.push({
+              ts: p.ts ?? p.capture_ts_us ?? p.capture_ts_ms ?? now,
+              cam_id: String(camId),
+              gid: (p.global_id ?? p.gid ?? null),
+              track_id: trackId,
+              bev_x: Number(p.bev_x ?? p.x),
+              bev_y: Number(p.bev_y ?? p.y),
+              raw: p
+            });
+            if (logs.length > MAX_LOGS) logs.shift();
+          }
+        }
+        upsertCamOptions();
+        render();
+      });
+      /*ws.onmessage = (event) => {
         let msg;
         try { msg = JSON.parse(event.data); } catch { return; }
 
@@ -210,7 +319,7 @@
         }
         upsertCamOptions();
         render();
-      };
+      };*/
     })();
   </script>
 </body>

@@ -72,17 +72,27 @@
 
     if (msg.type === "camera_init") {
       renderer.renderCameraInit(msg.cameras);
+      window.dispatchEvent(new CustomEvent("edge:camera_init", { detail: msg.cameras }));   
       setStatus("receiving: camera_init");
+      return;
+    }
+    
+    if (msg.type === "camera_update") {
+      renderer.renderCameraInit(msg.cameras);
+      window.dispatchEvent(new CustomEvent("edge:camera_update", { detail: msg.cameras }));
+      setStatus("receiving: camera_update");
       return;
     }
 
     if (msg.type === "detected_data") {
       renderer.renderDetectedData(msg.data || {});
+      window.dispatchEvent(new CustomEvent("edge:detected_data", { detail: msg.data || {} }));
       setStatus("receiving: detected_data");
       return;
     }
 
     if (msg.type === "camera_status") {// msg.status: { "0": {online, rx_fps, ...}, "1": {...} }
+      window.dispatchEvent(new CustomEvent("edge:camera_status", { detail: msg.status })); 
       console.log("camera_status", msg.status);
     }
 
